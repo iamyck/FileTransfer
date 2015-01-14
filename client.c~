@@ -32,17 +32,44 @@ struct sockaddr_in serveraddr;
 FILE *filefd;
 int len = sizeof(serveraddr);
 int i;
+int lost = 0;
+int sus = -2;
 
 void *reset()
 {
+	dbtime_startTest ("timing");
 	struct datagram reData;
 	cfd = fopen("hi.txt", "r+");
 	while(1)
 	{
 		recv(controlfd, (char *)(&reData), length, 0);
-		fseek(cfd, reData.index * 1024, SEEK_SET);
-		fputs(reData.buf, cfd);
-		printf("fix:%d\n", reData.index);
+		if(reData.index < 0)
+		{
+			checkData.acget = 0 - reData.index;
+			sus = checkData.acget;
+			checkData.expected = i;
+			lost += sus - i;
+			send(controlfd, (char *)(&checkData), sizeof(checkData), 0);
+		}
+		else
+		{
+			fseek(cfd, reData.index * 1024, SEEK_SET);
+			fputs(reData.buf, cfd);
+			lost--;
+			//printf("lost:%d\n", lost);
+			if(i == sus)
+			{
+				checkData.expected = -1;
+				send(controlfd, (char *)(&checkData), sizeof(checkData), 0);
+				dbtime_endAndShow ();
+				close(controlfd);
+				fclose(filefd);
+				printf("finish\n");
+				printf("lost%d\n", lost);
+				printf("sus%d\n", sus);
+			}
+			printf("fix:%d\n", reData.index);
+		}
 	}
 }
 
@@ -80,8 +107,8 @@ void main()
 	int i = 0;
 	int size = 1024 * 1024;
 
-	dbtime_startTest ("timing");
-	while(i < size)
+	
+	while(1)
 	{	
 		recvfrom(clientfd, (char *)(&recvData), length, 0, (struct sockaddr *)&serveraddr, &len); 
 		//printf("sdf:%c\n", recvBuf[bufId][7]);
@@ -90,26 +117,27 @@ void main()
 		{
 			if(recvData.index > i)
 			{
+				lost += (recvData.index - i);
 				checkData.acget = recvData.index;
 				checkData.expected = i;
-				recvData.index = i;
 				send(controlfd, (char *)(&checkData), sizeof(checkData), 0);
-				i = recvData.index;
+				i = recvData.index + 1;
+				fseek(filefd, recvData.index * 1024, SEEK_SET);
 				fputs(recvData.buf, filefd);
-			}    		
+				printf("get:%d\n", recvData.index);	
+				printf("from:%d\n", checkData.expected);	
+				printf("to:%d\n", checkData.acget);	
+				sleep(1);		
+			}		
 		}
 		else
 		{		
 			i++;
 			fputs(recvData.buf, filefd);
-		}
-		
-		
+			printf("get:%d\n", recvData.index);
+		}	
 	}
-	dbtime_endAndShow ();
-
-	fclose(filefd);
-	printf("finish\n");
+	
 }
 
 

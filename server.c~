@@ -34,21 +34,25 @@ int reSend;
 char *indexBuf;
 FILE *filefd;
 FILE *cfd;
+int newclientfd;
 
 void *reset()
 {
 	cfd = fopen("hello.txt", "r");
 	struct datagram reData;
 	struct controlgram cg;
-	int newclientfd = accept(controlfd, (struct sockaddr*)&clientaddr, 
+	newclientfd = accept(controlfd, (struct sockaddr*)&clientaddr, 
 		&len);
 	if(newclientfd < 0){printf("listen fail\n");exit(1);}
 
 	
 	while(1)
 	{
-		//判断客户端是否还活着
 		recv(newclientfd, (char *)(&cg), sizeof(cg), 0);
+		if(cg.expected == -1)
+		{
+			exit(1);
+		}	
 		for(reSend = cg.expected; reSend < cg.acget; reSend++)
 		{
 			fseek(cfd, reSend * 1024, SEEK_SET);
@@ -105,10 +109,15 @@ void main()
 	{	
 		sendData.index = index;
 		index++;
-		//printf("send%d\n", index);
+		printf("send%d\n", index);
 		sendto(serverfd, (char *)(&sendData), length, 0, (struct sockaddr *)&clientaddr, sizeof(clientaddr));
 	}
+	
+	struct datagram finishData;	
+	finishData.index = 0 - index;
+	send(newclientfd, (char *)(&finishData), sizeof(finishData), 0);
 	printf("send finish\n");
+	while(1);
 }
 
 

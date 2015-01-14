@@ -5,8 +5,6 @@
 #define DBTIME_H
 
 #include<sys/types.h>
-#include<stdlib.h>
-#include<stdio.h>
 // May also print to "outfile".
 extern char *dbtime_filename;
 
