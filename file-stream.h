@@ -8,9 +8,17 @@
 #include<netinet/in.h>
 #include<string.h>
 
+struct net_stream{
+
+	int 	fd;
+	struct 	sockaddr_in addr;
+}; 
+
 int open_client();
 
-int open_server();
+int open_tcp_server();
+
+int open_udp_server();
 
 void request(int, char *);
 

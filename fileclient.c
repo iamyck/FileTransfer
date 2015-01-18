@@ -1,16 +1,11 @@
 #include"file-stream.h"
 #include"file-transfer.h"
-#include"dbtime.h"
-
 
 void main()
 {
 	int fd;
-	
-	fd = open_client();
-	
-	request(fd, "hello.txt");
-	dbtime_startTest ("timing");
+	fd = open_client();	
+	request(fd, "1G.img");	
 	tcp_file_get(fd);
-	dbtime_endAndShow ();
+	//udp_file_get(fd);
 }

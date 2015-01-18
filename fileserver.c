@@ -7,9 +7,10 @@ void main()
 {
 	char *filename;
 	int serverfd, controlfd;
-	serverfd = open_server();
 
+	serverfd = open_tcp_server();
 	controlfd = wait_for_request(serverfd, filename);
-	
-	tcp_file_send(controlfd, serverfd, "hello.txt");
+	printf("dfssdfsd%s\n", filename);
+	//udp_file_send(controlfd, "1G.img");
+	tcp_file_send(controlfd, serverfd, "1G.img");
 }
