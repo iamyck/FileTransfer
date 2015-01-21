@@ -1,3 +1,14 @@
+/*****************************************************************************/
+/* Copyright (C) SSE-USTC, 2014-2015                                         */
+/*                                                                           */
+/*  FILE NAME             :  file-transfer.c                                 */
+/*  PRINCIPAL AUTHOR      :  SA14226208                                      */
+/*  LANGUAGE              :  C                                               */
+/*  TARGET ENVIRONMENT    :  ANY                                             */
+/*  DATE OF FIRST RELEASE :  2015/01/21                                      */
+/*  DESCRIPTION           :  transfer functions                              */
+/*****************************************************************************/
+
 #include<stdlib.h>
 #include<sys/types.h>
 #include<sys/stat.h>
@@ -6,388 +17,297 @@
 #include<sys/socket.h>
 #include<netinet/in.h>
 #include<string.h>
+#include<pthread.h>
 #include"file-stream.h"
 #include"file-transfer.h"
-#include<pthread.h>
-#include<sys/epoll.h>  
-
-#define THREAD_NUM 1
-#define MAX_EVENTS 10
-#define DATAGRAM_SIZE 1024
-#define BLOCK_SIZE 256
 
 /* tcp send thread fuction */
 void *tcp_send_thread(void *a)
 {	
-	char 	*finish;
-	int 	fd;
-	int 	size;
-	int 	seek;	
-	int 	length;
-	int 	index;
-	void    *fp;
-	void 	*cur;
-	FILE 	*filefd;
-	struct 	datagram sendData;
-	struct 	thread_args *args;
-	
-	fp = malloc(1024*256);
-	args = (struct thread_args *)a;	
-	fd = args->fd;
-	size = args->size;
-	seek = args->seek;
-	length = sizeof(sendData);
-	index = 0;
+    int            sendfd;        /* tcp connection fd */
+    int            size;          /* file block size */
+    int            seek;          /* file start point */
+    int            i;             /* for loop value */
+    int            mem_buf_size;  /* memory buffer size */
+    void           *fp;           /* memory buffer point */
+    void           *cur;          /* current point */
+    FILE           *filefd;       /* sended file fd */
+    Thread_args    *args;         /* thread function args */
+    File_block     block_info;    /* sended file block info */
 
-	//printf("%s\n", args->filename);
-	filefd = fopen(args->filename, "r");
-	fseek(filefd, seek*1024, SEEK_SET);
-	send(fd, (char *)(&seek), 4, 0);
+    /* pick out formals */
+    args = (struct thread_args *)a;	
+    sendfd = args->fd;
+    size = args->size;
+    seek = args->seek;	
+   
+    /* malloc */
+    mem_buf_size = TCP_DATAGRAM_SIZE * TCP_BLOCK_SIZE;
+    fp = malloc(mem_buf_size);  
+  
+    /* open file send block info */ 
+    filefd = fopen(args->filename, "r");
+    fseek(filefd, seek * TCP_DATAGRAM_SIZE, SEEK_SET);
+    block_info.seek = seek;
+    block_info.size = size/TCP_BLOCK_SIZE;
+    send(sendfd, (char *)(&block_info), sizeof(block_info), 0);
 	
-	while(fread(fp, 1024*256, 1, filefd)>0)
-	{
-		cur = fp;
-		for(index = 0; index < 256; index++)
-		{
-			send(fd, cur, 1024, 0);
-		}
-		recv(fd, (char*)&seek, 4, 0);
-		bzero(fp, 1024*256);	
-	}
-	/* send last one */
-	sendData.index = -1;
-	send(fd, (char *)(&sendData), length, 0);
-	close(filefd);
-	close(fd);	
+    /* send loop */
+    while(fread(fp, mem_buf_size, 1, filefd) > 0)
+    {
+        cur = fp;
+        for(i = 0; i < TCP_BLOCK_SIZE; i++)
+        {
+            send(sendfd, cur, TCP_DATAGRAM_SIZE, 0);
+            cur += TCP_DATAGRAM_SIZE;
+            recv(sendfd, (char *)(&seek), 4, 0);
+        }
+        bzero(fp, TCP_DATAGRAM_SIZE * TCP_BLOCK_SIZE);	
+    }
+
+    close(filefd);
+    close(sendfd);	
 }
 
 /* tcp receive thread fuction */
 void *tcp_recv_thread(void *a)
 {	
-	int 	newfd;
-	int 	seek;
-	int 	length;
-	int		i;
-	void 	*fp;
-	void 	*cur;
-	FILE 	*filefd;
-	struct	datagram recvData;
-	struct 	thread_args *args;
+    int            recvfd;        /* tcp connection fd */
+    int            seek;          /* file block size */
+    int            recv_len;      /* received length */    
+    int            pack_num;      /* number of packages */ 
+    int            mem_buf_size;  /* memory buffer size */
+    int            i;             /* for loop value */
+    int            j;             /* for loop value */
+    void           *fp;           /* memory buffer point */
+    void           *cur;          /* current point */
+    FILE           *filefd;       /* written file fd */
+    Thread_args    *args;         /* thread function args */
+    File_block     block_info;    /* sended file block info */
 	
-	fp = malloc(1024*256);
-	cur = fp;
-	args = (struct thread_args *)a;
-	newfd = args->fd;
-	length = sizeof(recvData);
+    mem_buf_size = TCP_DATAGRAM_SIZE * TCP_BLOCK_SIZE;
+    fp = malloc(mem_buf_size);
+    cur = fp;
+    args = (struct thread_args *)a;
+    recvfd = args->fd;
+	
+    /* open written file */
+    filefd = fopen("hi.img", "r+");
 
-	filefd = fopen("hi.img", "r+");
-	recv(newfd, (char*)&seek, 4, 0);
-	fseek(filefd, seek*1024, SEEK_SET);
-	/* receive */
-	for(;;)
-	{
-		for(i = 0; i < 256; i++)
-		{
-			recv(newfd, cur, 1024, 0);
-			cur += 1024;
-		}	
-		send(newfd, "4", 2, 0);
-		fwrite(fp, 1024*256, 1, filefd);
-		bzero(fp, 1024*256);
-		cur = fp;
-	}
+    /* recv block info and do preparation */
+    recv(recvfd, (char*)&block_info, sizeof(block_info), 0);
+    seek = block_info.seek;
+    pack_num = block_info.size;
+    fseek(filefd, seek * TCP_DATAGRAM_SIZE, SEEK_SET);
+
+    /* receive */
+    for(j = 0; j < pack_num; j++)
+    {
+        for(i = 0; i < TCP_BLOCK_SIZE; i++)
+        {
+            recv_len = recv(recvfd, cur, TCP_DATAGRAM_SIZE, 0);
+            cur += TCP_DATAGRAM_SIZE;
+            send(recvfd, "4", 2, 0);
+        }	
+        fwrite(fp, mem_buf_size, 1, filefd);
+        bzero(fp, mem_buf_size);
+        cur = fp;
+    }
+
+    close(filefd); 
+    close(recvfd);
 }
 
 /* send file using tcp */
-void tcp_file_send(int controlfd, int serverfd, char *filename)
+void tcp_file_send(int controlfd, int serverfd)
 {
+    char           filename[20];
+    int            len;           /* size of sockaddr_in */
+    int            i;             /* for loop value */
+    int            size;          /* data size per thread */
+    int            newclientfd;   /* new tcp connection fd */
+    pthread_t      tid[10];       /* thread id array */
+    struct sockaddr_in clientaddr;/* client socket addr */
+    
+    len = sizeof(clientaddr);
+
+    /* time start */
+    time_t t_start,t_end;
+    t_start = time(NULL);
 	
-	char 	*finish;
-	int 	len;
-	int 	length;
-	int 	i;
-	int 	size;
-	struct 	datagram sendData;
-	struct 	sockaddr_in clientaddr;
-	pthread_t tid[10];
+    /* recv file name */
+    recv(controlfd, filename, 20, 0);
+    printf("%s\n", filename);
+    size = 1073741824 / TCP_DATAGRAM_SIZE;
 	
-	len = sizeof(clientaddr);
-	length = sizeof(sendData);
-	size = (1073741824 / 1024 + 2000) / THREAD_NUM + 1;
+    for(i = 0; i<THREAD_NUM; i++)
+    {
+        struct thread_args *args;
+        listen(serverfd, 10); 
+        args = (struct thread_args *)malloc(sizeof(struct thread_args));
+
+        /* accept */
+        newclientfd = accept(serverfd, (struct sockaddr*)&clientaddr, &len);
+        args->filename = filename;
+        args->seek = i * size;	
+        args->size = size;
+        args->fd = newclientfd;
+
+        /* open thread */
+        pthread_create(&(tid[i]), NULL, tcp_send_thread, (void *)args);		
+    }
 	
-	for(i = 0; i<THREAD_NUM; i++)
-	{
-		listen(serverfd, 10);
-		struct thread_args *args;
-		args = (struct thread_args *)malloc(sizeof(struct thread_args));
-		/* accept */
-		int newclientfd = accept(serverfd, (struct sockaddr*)&clientaddr, &len);
-		args->filename = filename;
-		args->seek = i * size;		
-		args->size = size;
-		args->fd = newclientfd;
-		/* open thread */
-		pthread_create(&(tid[i]), NULL, tcp_send_thread, (void *)args);		
-	}
+    /* wait threads */
+    for(i = 0; i<THREAD_NUM; i++)
+    {
+        pthread_join(tid[i], NULL);
+    }
+    close(controlfd);
+    printf("finish\n");
 	
-	/* wait threads */
-	for(i = 0; i<THREAD_NUM; i++)
-	{
-		pthread_join(tid[i], NULL);
-	}
-	close(controlfd);
-	printf("finish\n");
+    /* time end */
+    printf("finish\n");
+    t_end = time(NULL);
+    printf("共用时%.0fs\n", (double)difftime(t_end,t_start));	
 }
 
 /* get file using tcp */
-void tcp_file_get(int fd)
+void tcp_file_get(int fd, char *filename)
 {
-	/* time start */
-	time_t t_start,t_end;
-   	t_start = time(NULL);
+    int            i;             /* for loop value */
+    FILE           *filefd;       /* written file fd */
+    pthread_t      tid[10];       /* thread id array */
 
-	int 	i;
-	int 	length;
-	char 	*finish;
-	FILE 	*filefd;
-	struct 	datagram recvData;
+    filefd = fopen("hi.img", "w+");
+    close(filefd);
 
-	length = sizeof(recvData);
-	filefd = fopen("hi.img", "w+");
-	close(filefd);
+    /* time start */
+    time_t t_start,t_end;
+    t_start = time(NULL);
 
-	pthread_t tid[10];
-	/* open threads */
-	for(i = 0; i<THREAD_NUM; i++)
-	{
-		struct thread_args *args;
-		args = (struct thread_args *)malloc(sizeof(struct thread_args));
-		int newfd = open_client();
-		args->fd = newfd;
-		args->size = fd;
-		pthread_create(&(tid[i]), NULL, tcp_recv_thread, (void *)args);
-	}
+    /* request */
+    request(fd, filename);
 
-	for(i = 0; i<THREAD_NUM; i++)
-	{
-		pthread_join(tid[i], NULL);
-	}
-	close(fd);
+    /* open threads */
+    for(i = 0; i<THREAD_NUM; i++)
+    {
+        int newfd = open_client();
+        struct thread_args *args;
+        args = (struct thread_args *)malloc(sizeof(struct thread_args));  
+        args->fd = newfd;
+        args->size = fd;
+        pthread_create(&(tid[i]), NULL, tcp_recv_thread, (void *)args);
+    }
 
-	/* time end */
-	printf("finish\n");
-	t_end = time(NULL);
-   	printf("共用时%.0fs\n", (double)difftime(t_end,t_start));	
+    /*wait for thread */
+    for(i = 0; i<THREAD_NUM; i++)
+    {
+    pthread_join(tid[i], NULL);
+    }
+    close(fd);
+
+    /* time end */
+    printf("finish\n");
+    t_end = time(NULL);
+    printf("共用时%.0fs\n", (double)difftime(t_end,t_start));	
 }
 
-void udp_file_send(int controlfd, char *filename)
+void udp_file_send(int controlfd)
 {	
-	send(controlfd, "hello", 10, 0);
-	int 	begin;
-	int 	index;
-	int 	serverfd;
-	int 	len;
-	int 	i;
-	int 	lost;
-	int 	read_size;
-	int		pack_count;
-	void	*fp;
-	void	*send_point;
-	FILE 	*send_file_fd;
-	struct 	sockaddr_in clientaddr;
-	struct 	datagram sendData;
-	struct	controlgram controlData;
+    char           filename[20];  /* filename */
+    int            udp_serverfd;  /* udp server fd */  
+    int            len;           /* sizeof client addr */
+    int            i;             /* for loop value */
+    int            mem_buf_size;  /* memory buffer size */
+    void           *fp;           /* memory buffer point */
+    void           *cur;          /* current point */
+    FILE           *send_file_fd; /* sended file fd */
+    struct sockaddr_in clientaddr;/* client addr */
 	
-	begin = 0;
-	index = 0;
-	fp = malloc(1024*256);
-	serverfd = open_udp_server();
-	send_file_fd = fopen("1G.img", "r");
+    /* malloc */
+    mem_buf_size = UDP_DATAGRAM_SIZE * UDP_BLOCK_SIZE;
+    fp = malloc(mem_buf_size);
 
-	char buf[20];
-	len = sizeof(clientaddr);
-	recvfrom(serverfd, buf, 20, 0,
-			(struct sockaddr*)&clientaddr, &len);
-	printf("%s\n", buf);
+    /* open udp server */
+    udp_serverfd = open_udp_server();
+    len = sizeof(clientaddr);
 	
-	/* time start */
-	time_t t_start,t_end;
-	t_start=time(NULL);
+    /* time start */
+    time_t t_start,t_end;
+    t_start=time(NULL);
+	
+    /* recv file name and open */
+    recvfrom(udp_serverfd, filename, 20, 0,
+             (struct sockaddr*)&clientaddr, &len);
+    printf("filename%s\n", filename);
+    send_file_fd = fopen(filename, "r");
 
-	while(1)
-	{
-		bzero(fp, 1024*256);
-		send_point = fp;
-		read_size = fread(fp, 1024*256, 1, send_file_fd);
+    /* send */
+    while(fread(fp, mem_buf_size, 1, send_file_fd)>0)
+    {
+        cur = fp;
+        for(i = 0; i < UDP_BLOCK_SIZE; i++)
+        {
+            sendto(udp_serverfd, cur, 1024, 0, 
+                   (struct sockaddr*)&clientaddr,sizeof(clientaddr));
+            cur += UDP_DATAGRAM_SIZE;
+            recvfrom(udp_serverfd, filename, 20, 0,
+                   (struct sockaddr*)&clientaddr, &len);
+        }
+        bzero(fp, mem_buf_size);	
+    }
 
-		/* send data */
-		pack_count = 0;
-		i = 255;
-		while(read_size > 0)
-		{
-			sendData.index = pack_count;
-			memcpy(sendData.buf, send_point, 1024);		
-			sendto(serverfd, (void*)&sendData, sizeof(sendData), 0, 
-					(struct sockaddr*)&clientaddr,sizeof(clientaddr));
-			printf("send %d\n", pack_count);
-			pack_count++;
-			i--;
-		}
-
-		/* one block check */
-		sendData.index = -1;
-		send(controlfd, (void*)&sendData, sizeof(sendData), 0);
-		recv(controlfd, (void *)&controlData, sizeof(controlData), 0);
-
-		/* resend lost data */
-		for(i = 0; i < pack_count; i++)
-		{
-			if(controlData.map[i] == 0)
-			{
-				sendData.index = pack_count;
-				memcpy(sendData.buf, fp + pack_count*1024, 1024);
-				send(controlfd, (void*)&sendData, sizeof(sendData), 0);
-				printf("resend%d\n", i);
-			}
-		}	
-
-		/* one block last */
-		sendData.index = -2;
-		send(controlfd, (void*)&sendData, sizeof(sendData), 0);
-		recv(controlfd, (void *)&controlData, sizeof(controlData), 0);
-		/* send finish */
-		if(read_size == 0)
-		{
-			sendData.index = -3;
-			send(controlfd, (void*)&sendData, sizeof(sendData), 0);
-			printf("finish\n");
-			break;
-		}
-	}
-
-	/* time end */
-	t_end=time(NULL);
-   	printf("共用时%.0fs\n", (double)difftime(t_end,t_start));	
+    close(send_file_fd);
+    close(udp_serverfd);	
+	
+    /* time end */
+    t_end=time(NULL);
+    printf("共用时%.0fs\n", (double)difftime(t_end,t_start));	
 }
 
-void udp_file_get(int controlfd)
+void udp_file_get(int controlfd, char *filename)
 {
-	char 	buf[1024];
-	recv(controlfd, buf, 1024, 0);
-	printf("%s\n", buf);
-	int		cur_begin;
-	int 	cur_index;
-	int		err_size;
-	int		gap_size;
-	int		i;
-	int 	len;
-	int 	clientfd;
-	int		epoll_fd;
-	int		epoll_ev;
-	void	*fp;
-	FILE 	*recv_file_fd;
-	struct 	sockaddr_in serveraddr;
-	struct 	datagram recvData;
-	struct	controlgram controlData;
-	struct 	epoll_event ev; 
-	struct 	epoll_event events[MAX_EVENTS];
+    int            i;             /* for loop value */
+    int            len;           /* sizeof server addr */
+    int            clientfd;      /* receive udp fd */   
+    int            mem_buf_size;  /* memory buffer size */
+    void           *fp;           /* memory buffer point */
+    void           *cur;          /* current point */
+    FILE           *recv_file_fd; /* written file fd */
+    struct sockaddr_in serveraddr;
 
-	cur_begin = 0;
-	cur_index = 0;
-	err_size = 0;
-	bzero(controlData.map, 256);
-	len = sizeof(serveraddr);
-	fp = malloc(1024*256);
-	serveraddr.sin_family = AF_INET;
-	serveraddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-	serveraddr.sin_port = htons(6208);
+    recv_file_fd = fopen("hi.img", "w+");
+    len = sizeof(serveraddr);
+    /* malloc */
+    mem_buf_size = UDP_DATAGRAM_SIZE * UDP_BLOCK_SIZE;
+    fp = malloc(mem_buf_size);
+    cur = fp;
 
-	clientfd = socket(PF_INET, SOCK_DGRAM, 0);
-	recv_file_fd = fopen("hi.img", "w+");
-	sendto(clientfd, "hello", sizeof("hello"), 0, 
-		(struct sockaddr*)&serveraddr,sizeof(serveraddr));
-	
-	/* epoll open */
-	epoll_fd = epoll_create(MAX_EVENTS);
-	if(epoll_fd == -1)  
-	{  
-		perror("epoll create failed");  
-		exit(1);  
-	}
+    /* udp initial */
+    serveraddr.sin_family = AF_INET;
+    serveraddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    serveraddr.sin_port = htons(6208);
+    clientfd = socket(PF_INET, SOCK_DGRAM, 0);
 
-	/* add client event */
-	ev.events = EPOLLIN;  
-	ev.data.fd = clientfd;
-	if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, clientfd, &ev) == -1)  
-	{  
-		perror("epll_ctl:clientfd register failed");
-		exit(1);  
-	}
-	
-	/* add control event */
-	ev.events = EPOLLIN;  
-	ev.data.fd = controlfd;
-	if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, controlfd, &ev) == -1)  
-	{  
-		perror("epll_ctl:controlfd register failed");  
-		exit(1);  
-	}
-		
-	for(;;)
-	{
-		epoll_ev = epoll_wait(epoll_fd,events, MAX_EVENTS, -1);
-		if(epoll_ev == -1)
-		{  
-			perror("start epoll_wait failed");  
-			exit(1);  
-		}
-		/* handle event */
-		for(i = 0; i<epoll_ev; i++)  
-		{  
-			/* contorl data arrive */ 
-			if(events[i].data.fd == controlfd)  
-			{  
-				recv(controlfd, (void*)&recvData, sizeof(recvData), 0);
-				switch(recvData.index)
-				{
-					/* one udp finish */
-					case -1:		
-						send(controlfd, (void*)&controlData, sizeof(controlData), 0);
-						for(i = 0; i < 256; i++)	
-						{
-							printf("map[%d]:%d\n", i, controlData.map[i]);
-						}
-						break;
+    /* send filename */
+    sendto(clientfd, filename, 20, 0,
+        (struct sockaddr*)&serveraddr,sizeof(serveraddr));
 
-					/* one block finish */
-					case -2:
-						fwrite(fp, 1024*256, 1, recv_file_fd);
-						bzero(controlData.map, 256);
-						send(controlfd, "hello", 10, 0);
-						break;
-
-					/* all finish */
-					case -3:
-						close(controlfd);
-						return;
-
-					/* resend data */
-					default:
-						memcpy(fp+recvData.index*1024, recvData.buf, 1024);
-						break;	
-				}
-			}  
- 			/* fiel data arrive*/ 
-			else if(events[i].data.fd == clientfd)
-			{
-				recvfrom(clientfd, (unsigned char*)&recvData, sizeof(recvData), 0,
-					(struct sockaddr*)&serveraddr, &len);
-				controlData.map[recvData.index] = 1;
-				memcpy(fp+recvData.index*1024, recvData.buf, 1024);
-				printf("recv%s\n",(char*)fp);
-				printf("get:%d\n", recvData.index);
-			}
-		}	
-	}
+    /* recv */
+    while(1)
+    {	
+        for(i = 0; i < UDP_BLOCK_SIZE; i++)
+        {
+            recvfrom(clientfd, cur, UDP_DATAGRAM_SIZE, 0,
+                (struct sockaddr*)&serveraddr, &len);
+            cur += UDP_DATAGRAM_SIZE;
+            sendto(clientfd, "1G.img", 20, 0, 
+                (struct sockaddr*)&serveraddr,sizeof(serveraddr));		
+        }	
+			
+        fwrite(fp, UDP_DATAGRAM_SIZE * UDP_BLOCK_SIZE, 1, recv_file_fd);
+        bzero(fp, UDP_DATAGRAM_SIZE * UDP_BLOCK_SIZE);
+        cur = fp;
+    }
 }
 
