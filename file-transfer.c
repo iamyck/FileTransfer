@@ -65,6 +65,7 @@ void *tcp_send_thread(void *a)
         bzero(fp, TCP_DATAGRAM_SIZE * TCP_BLOCK_SIZE);	
     }
 
+
     close(filefd);
     close(sendfd);	
 }
